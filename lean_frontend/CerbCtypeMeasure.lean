@@ -678,4 +678,82 @@ theorem all_congr {α : Type} (l : List α) (F G : α → Bool) (h : ∀ x, x �
     simp only [List.all_cons]
     rw [h x List.mem_cons_self, ih (fun y hy => h y (List.mem_cons_of_mem x hy))]
 
+/-! ## Entry fuels
+
+The three measures above are what the proofs need: every cross-call of the block
+strictly decreases them. They are also what the generated wrappers used to pass as
+the block's starting fuel, and `hops` materializes every pair of tag occurrences of
+the two tables, so each `are_compatible*` call cost time quadratic in the tables
+(about 23% of a linked X25519 run, plus the allocation of those pairs).
+
+A wrapper may start the block at ANY fuel at or above its measure: the
+`*_measure_sufficient` obligations (Ctype_aux_lemMeasureProofs) show the worker is
+stable there. The entry fuels below replace `hops` by its A-independent upper bound
+`|occ t1| * |occ t2|` (two list lengths, no pair list). Every result is unchanged;
+the only difference is a larger starting fuel, which the block never exhausts. -/
+
+/-- An upper bound of `hops t1 t2 A` for every `A`. -/
+def hopsFuel (t1 t2 : Table) : Nat := (occ t1).length * (occ t2).length
+
+def countFuel (t1 t2 : Table) (tags1 tags2 : List sym) : Nat :=
+  hopsFuel t1 t2 + missing tags1 (occ t1) + missing tags2 (occ t2)
+
+/-- Entry fuel of `are_compatible_aux` (the `fuel_measure` declare in ctype_aux.lem). -/
+def auxFuel (p : Env) (p0 p1 : qualifiers × ctype) : Nat :=
+  if sameTuTags p0.2 p1.2 then 1 else
+  match p with
+  | (t1, t2, _) =>
+    countFuel t1 t2 (tagsIn p0.2) (tagsIn p1.2) * weight t1 t2
+      + ctype.lemSize p0.2 + ctype.lemSize p1.2 + 1
+
+/-- Entry fuel of `are_compatible_params_aux`. -/
+def paramsAuxFuel (env1 : Env) (lemTail : List Param × List Param) : Nat :=
+  match env1 with
+  | (t1, t2, _) =>
+    countFuel t1 t2 (tagsInParams lemTail.1) (tagsInParams lemTail.2) * weight t1 t2
+      + ctype_.lemSize_aux1 lemTail.1 + ctype_.lemSize_aux1 lemTail.2 + 1
+
+/-- Entry fuel of `are_compatible_params`. -/
+def paramsFuel (env1 : Env) (params1 params2 : List Param) : Nat :=
+  paramsAuxFuel env1 (params1, params2) + 1
+
+theorem length_pairs (l1 l2 : List sym) : (pairs l1 l2).length = l1.length * l2.length := by
+  induction l1 with
+  | nil => simp [pairs]
+  | cons a l ih =>
+    simp only [pairs, List.flatMap_cons, List.length_append, List.length_map, List.length_cons] at ih ⊢
+    rw [ih, Nat.succ_mul]; omega
+
+theorem hops_le_hopsFuel (t1 t2 : Table) (A : List (sym × sym)) : hops t1 t2 A ≤ hopsFuel t1 t2 := by
+  unfold hops hopsFuel
+  rw [← length_pairs]
+  exact List.length_filter_le _ _
+
+theorem count_le_countFuel (t1 t2 : Table) (A : List (sym × sym)) (tags1 tags2 : List sym) :
+    count t1 t2 A tags1 tags2 ≤ countFuel t1 t2 tags1 tags2 := by
+  unfold count countFuel; have := hops_le_hopsFuel t1 t2 A; omega
+
+theorem auxBound_le_auxFuel (p : Env) (p0 p1 : qualifiers × ctype) :
+    auxBound p p0 p1 ≤ auxFuel p p0 p1 := by
+  obtain ⟨t1, t2, A⟩ := p
+  unfold auxBound auxFuel; split
+  · exact Nat.le_refl 1
+  · simp only [auxGeneral]
+    have := Nat.mul_le_mul_right (weight t1 t2)
+      (count_le_countFuel t1 t2 A (tagsIn p0.2) (tagsIn p1.2))
+    omega
+
+theorem paramsAuxBound_le_paramsAuxFuel (env1 : Env) (lemTail : List Param × List Param) :
+    paramsAuxBound env1 lemTail ≤ paramsAuxFuel env1 lemTail := by
+  obtain ⟨t1, t2, A⟩ := env1
+  simp only [paramsAuxBound, paramsAuxFuel]
+  have := Nat.mul_le_mul_right (weight t1 t2)
+    (count_le_countFuel t1 t2 A (tagsInParams lemTail.1) (tagsInParams lemTail.2))
+  omega
+
+theorem paramsBound_le_paramsFuel (env1 : Env) (params1 params2 : List Param) :
+    paramsBound env1 params1 params2 ≤ paramsFuel env1 params1 params2 := by
+  unfold paramsBound paramsFuel
+  have := paramsAuxBound_le_paramsAuxFuel env1 (params1, params2); omega
+
 end CerbCtypeMeasure

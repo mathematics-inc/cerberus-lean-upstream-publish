@@ -363,14 +363,21 @@ Nothing else.
 **(c) missing features — loud, attributed refusals (not bugs):**
 
 - *Semantics switches* (`--switches=…`, `--iso`): since PNVI arc S4 (2026-10-07,
-  `docs/2026-10-07_pnvi-s4-lane-record.md`) exactly ONE non-default set is SUPPORTED —
+  `docs/2026-10-07_pnvi-s4-lane-record.md`) the base non-default set is SUPPORTED —
   `--switches=PNVI_ae_udi` (both cmdliner forms; a one-element list), matched against the
   oracle under the SAME switch by `scripts/test_pnvi.sh` (§5, LADDER Tier A row 14; the
   run's instance `⟨[.PNVI .AE_UDI]⟩`, one general path — the set only selects the arms).
-  Every other value is REFUSED, each element with its reason (`Main.judgeSwitches` /
+  The optional `permissive_pointer_arith` combination has a narrower, eight-program
+  check in `scripts/test_permissive_pointer_arith.py`: temporary outside pointers,
+  concrete subtraction across allocations, address round trips and ambiguous provenance, and rejection
+  of null arithmetic/subtraction and out-of-bounds loads. Each verdict and UB location
+  must match the OCaml engine; the expected outcome is also checked independently.
+  Four `PnviArmsTest` unit checks additionally pin symbolic-provenance preservation
+  during shifts/subtraction and shifting a pointer without provenance.
+  Other values are REFUSED, each element with its reason (`Main.judgeSwitches` /
   `refuseSwitches`; exit 2, attributed; [AGENT] Q7 recommendation "REFUSE now … plumbing … is
   not wanted", accepted [USER 2026-09-03] for the rest): the other switch names, plain `PNVI`/`PNVI_ae` (unvalidated,
-  design §F.3), mixed lists, `--iso`, and the two places the ORACLE is fail-open
+  design §F.3), other mixed lists, `--iso`, and the two places the ORACLE is fail-open
   (design §C.5) — an override in one list (**R-PNVI-11**: the oracle prints "would override
   a previous switch --> ignoring." and runs on) and an unknown name (**R-PNVI-12**: "failed
   to parse switch … --> ignoring."); witnesses `scripts/check_cli_refusals.sh` (row 1).
@@ -405,8 +412,9 @@ Nothing else.
   `Switches.has_switch` read in the exec cone evaluates as the oracle's
   default by definition;
   since the seam-hygiene slice (2026-09-19, `docs/2026-09-18_seam-hygiene-record.md`
-  §4) every switch-conditioned arm of `impl_mem.ml` is written in `CerbMem` in the
-  explicit `if has_switch … then <loud kill> else <default>` shape — `CerbSwitch`
+  §4) unported switch-conditioned arms of `impl_mem.ml` are written in `CerbMem` in the
+  explicit `if has_switch … then <loud kill> else <default>` shape; the supported
+  PNVI and permissive-pointer arms implement their upstream behavior — `CerbSwitch`
   carries the four switches those arms test (`strict_pointer_equality`,
   `strict_pointer_relationals`, `pointer_arith PERMISSIVE|STRICT`,
   `zero_initialised`, mirroring `switches.ml`), so the specialisation to the empty
@@ -418,7 +426,7 @@ Nothing else.
   parameterisation remains separate work; the concurrency feature branch is parked.
   The oracle's switches CHANGE the answer (under `PNVI_ae_udi` an integer→pointer UB043
   becomes a value), so each unsupported switch is a feature we do not have, not a
-  difference we hide; `PNVI_ae_udi` is the one we have, under its own lane.
+  difference we hide; `PNVI_ae_udi` has its own lane; the permissive combination has the focused checks above.
 - *Concurrency* (`--concurrency`): REFUSED, attributed — "not supported;
   the oracle's own mode is non-functional at `b9aeedcb4`" (`internal
   error: CONCURRENCY IS BROKEN`, `nondeterminism.ml:64` via `smt2.ml:38`).

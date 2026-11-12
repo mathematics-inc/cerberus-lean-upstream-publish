@@ -13,6 +13,7 @@
 -- this file rode on that transitive import. LemLib's Fmap is now the
 -- verbatim Pmap port (no Std.TreeMap), so the import is explicit here.
 import Std.Data.TreeMap
+import Std.Data.TreeSet
 import IntegerType
 import Ctype
 import Symbol
@@ -206,7 +207,12 @@ structure MemState where
   -- arc-6 S3: same treatment (the S0-profiled secondary hot seam)
   bytemap : Std.TreeMap Int AbsByte := Std.TreeMap.empty
   lastUsedUnionMembers : List (Int × identifier) := []
-  deadAllocations : List StorageInstanceId := []
+  -- A set, not a list: every load/store asks `contains`, and every scope
+  -- exit adds a killed local, so a list made each access linear in the
+  -- number of dead objects so far (quadratic runs). Only
+  -- `contains` and `insert` are used, so the order of the OCaml list
+  -- (impl_mem.ml dead_allocations) is not observable.
+  deadAllocations : Std.TreeSet StorageInstanceId := Std.TreeSet.empty
   dynamicAddrs : List Address := []
   -- last_used — impl_mem.ml:492; written by allocator (:1260), kill
   -- (:1541), load (:1567) and store (:1687), mirrored at each (zero-
@@ -1786,8 +1792,13 @@ def opIval (op : integer_operator) (v1 v2 : IntegerValue) : IntegerValue :=
 def offsetofIval [LemFuel] (enumDefs : EnumDefs) (tagDefs : TagDefs) (tagDefsMap : CerbTags.TagDefsMap) (tag : sym) (memb : identifier) : IntegerValue :=
   -- target_rep for lem offsetof_ival (mem.lem:257): the lem-side argument
   -- is the tag map, threaded through the whole layout family (2026-09-01
-  -- S-basket item 1 — the elaboration-time fold's only tag source)
-  let (xs, _) := offsetsof enumDefs tagDefs tagDefsMap tag
+  -- S-basket item 1 — the elaboration-time fold's only tag source).
+  -- It is also the ambient map: sizeof/alignof read union tags from the
+  -- ambient (impl_mem.ml's Tags.tagDefs ()), which is still empty while
+  -- AilEoffsetof is folded during elaboration, so offsetof in a struct with a
+  -- union member panicked. At run time both maps are the global, so this
+  -- changes nothing after elaboration.
+  let (xs, _) := offsetsof enumDefs tagDefsMap tagDefsMap tag
   match xs.find? (fun (ident, _, _) => idEqual ident memb) with
   | some (_, _, off) => integerIval off
   | none => failwithI "Concrete.offsetof_ival: invalid memb_ident"
@@ -2410,6 +2421,16 @@ def writeBytesTo (st : MemState) (addr : Int) (bytes : List AbsByte) : MemState 
     (st.bytemap, addr)).1
   { st with bytemap := bm }
 
+/-- Remove a killed allocation's bytes from the bytemap. The allocator's cursor
+    only moves down (`allocator`), so no later allocation overlaps
+    `[base, base + size)`, and every `loadM` arm requires a live, in-bounds
+    allocation before `readBytesFrom`. The erased bytes are therefore never
+    read again; keeping them only retains memory (the oracle keeps them). -/
+def eraseBytes (st : MemState) (base : Int) (size : Int) : MemState :=
+  let bm := (List.range size.toNat).foldl
+    (fun (bm : Std.TreeMap Int AbsByte) (i : Nat) => bm.erase (base + (i : Int))) st.bytemap
+  { st with bytemap := bm }
+
 def readBytesFrom (st : MemState) (addr : Int) (size : Nat) : List AbsByte :=
   (List.range size).map fun (i : Nat) =>
     match st.bytemap.get? (addr + (i : Int)) with
@@ -2639,10 +2660,13 @@ def killM [CerbGlobal.Switches] (loc : CerbLocation.Loc) (isDynamic : Bool) (pv 
       else match resolveIota precondition iota st with
         | .error k => (NDkilled k, st)
         | .ok (allocId, st1) =>
-          let st' := { st1 with
-            deadAllocations := allocId :: st1.deadAllocations
+          let st1' := match st1.allocations.get? allocId with
+            | some alloc => eraseBytes st1 alloc.base alloc.size
+            | none => st1
+          let st' := { st1' with
+            deadAllocations := st1'.deadAllocations.insert allocId
             lastUsed := some allocId
-            allocations := st1.allocations.erase allocId }
+            allocations := st1'.allocations.erase allocId }
           if CerbGlobal.has_switch .zap_dead_pointers then
             (NDkilled (Other (MerrOther "killM: SW_zap_dead_pointers is set but zap_pointers (impl_mem.ml:1447-1462) is not ported — switches are refused (Z-24)")), st)
           else (NDactive (), st')
@@ -2672,10 +2696,11 @@ def killM [CerbGlobal.Switches] (loc : CerbLocation.Loc) (isDynamic : Bool) (pv 
           fail_ (MerrOutsideLifetime s!"Concrete.get_allocation, alloc_id={allocId}")
         | some alloc =>
           if addr == alloc.base then                                             -- :1535-1546
-            let st' := { st with
-              deadAllocations := allocId :: st.deadAllocations
+            let stE := eraseBytes st alloc.base alloc.size
+            let st' := { stE with
+              deadAllocations := stE.deadAllocations.insert allocId
               lastUsed := some allocId                                             -- :1541
-              allocations := st.allocations.erase allocId }
+              allocations := stE.allocations.erase allocId }
             -- :1543-1546 SW_zap_dead_pointers → zap_pointers (:1447-1462, not
             -- ported): that switch is refused (Z-24), so the OCaml default
             -- arm `return ()` is the only reachable one; the set case is loud
@@ -2731,7 +2756,8 @@ def killM [CerbGlobal.Switches] (loc : CerbLocation.Loc) (isDynamic : Bool) (pv 
     only arm either engine executes — and a consumer's proof rewrites with
     the lemma instead of trusting a comment; the SET branch is a loud kill
     naming the un-ported OCaml arm (never reachable while those switches are
-    refused; hermetic pin: test/Unit/OpaqueFailureTest.lean). The arms, at
+    refused; hermetic pin: test/Unit/OpaqueFailureTest.lean). Permissive pointer
+    arithmetic is now ported and selectable with PNVI-ae-udi. The arms, at
     THIS tree's impl_mem.ml lines: `SW_strict_pointer_equality` (eq_ptrval
     :1860 → eqPtrval), `SW_strict_pointer_relationals` (lt/gt/le/ge_ptrval
     :1897/:1915/:1930/:1947 → lt/gt/le/gePtrval), `SW_pointer_arith
@@ -3148,10 +3174,9 @@ def gePtrval [CerbGlobal.Switches] (loc : CerbLocation.Loc) (pv1 pv2 : PointerVa
     else memReturn (a1 ≥ a2)                                  -- :1948-1950 (non-strict)
   | _, _ => memFail (MerrWIP "ge_ptrval") loc                 -- :1952-1953
 
-/-- diff_ptrval — impl_mem.ml:1954-1984 (strict, non-PERMISSIVE path;
-    the SW_pointer_arith PERMISSIVE branch at :1978-1983 in this tree is
-    guarded in the explicit loud-kill shape, seam-hygiene H2).
-    Valid only when BOTH pointers carry the SAME Prov_some allocation id
+/-- diff_ptrval — permissive mode mirrors impl_mem.ml:2014-2019: subtract
+    concrete addresses regardless of provenance, rejecting null/function pointers.
+    Without that option, valid only when BOTH pointers carry the SAME Prov_some allocation id
     and both addresses lie within [base, base+size] of that allocation
     (precond, impl_mem.ml:1955-1959); everything else fails MerrPtrdiff
     (→ UB048_disjoint_array_pointers_subtraction via the fail mapping).
@@ -3186,11 +3211,13 @@ def diffPtrval [LemFuel] [CerbGlobal.Switches] (enumDefs : EnumDefs) (tagDefs : 
     let getAllocFail (allocId : StorageInstanceId) :=
       (NDkilled (failReason (MerrOutsideLifetime
         s!"Concrete.get_allocation, alloc_id={allocId}") loc), st)
-    -- :1978-1983 SW_pointer_arith PERMISSIVE → a provenance-blind subtraction.
-    -- Refused set (Z-24): the default arm is the only reachable one; the set
-    -- case is loud (seam-hygiene H2)
+    -- impl_mem.ml:2014-2019: permissive subtraction accepts concrete addresses
+    -- independently of provenance; null/function pointers still fail.
     if CerbGlobal.has_switch (.pointer_arith .PERMISSIVE) then
-      (NDkilled (Other (MerrOther "diffPtrval: SW_pointer_arith PERMISSIVE is set but the permissive arm (impl_mem.ml:1978-1983) is not ported — switches are refused (Z-24)")), st)
+      match pv1, pv2 with
+      | .PV _ (.PVconcrete _ addr1), .PV _ (.PVconcrete _ addr2) =>
+        validPostcond addr1 addr2 st
+      | _, _ => errorPostcond
     else match pv1, pv2 with
     | .PV (.Prov_some allocId1) (.PVconcrete _ addr1),
       .PV (.Prov_some allocId2) (.PVconcrete _ addr2) =>

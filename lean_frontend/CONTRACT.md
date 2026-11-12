@@ -35,11 +35,15 @@ which is exactly why every unmodelled surface must refuse rather than guess.
 
 Matched (default-switch) mode of the oracle at the fork merge-base `b9aeedcb4`; sequential execution; the concrete
 memory model; LP64; `--nolibc` and libc modes as exercised by the lanes; explicit `--fuel` and address-space parameters.
-**Semantics switches: PNVI_ae_udi supported, matched against the oracle under the same switch; every other switch
-refused.** The switch set is a parameter of the semantics (`[CerbGlobal.Switches]`, PNVI arc S1, 2026-10-05). The binary
+**Semantics switches: PNVI_ae_udi, optionally with permissive_pointer_arith.**
+The combination permits temporary out-of-allocation pointers and subtraction of concrete
+addresses regardless of provenance. It does not permit null-pointer arithmetic or
+out-of-bounds loads. `scripts/test_permissive_pointer_arith.py` compares eight focused
+programs with OCaml under both configurations; this does not establish broad conformance. The switch set is a parameter of the semantics (`[CerbGlobal.Switches]`, PNVI arc S1, 2026-10-05). The binary
 supplies the default `[]` unless `--switches=PNVI_ae_udi` is given (PNVI arc S4, 2026-10-07): then `[PNVI_ae_udi]`, and §1
-applies with the oracle run under the SAME switch (`scripts/test_pnvi.sh`, LADDER Tier A row 14). Every other
-`--switches` value — another switch name, plain `PNVI`/`PNVI_ae`, a mixed list, an override (R-PNVI-11), an unknown name
+applies with the oracle run under the SAME switch (`scripts/test_pnvi.sh`, LADDER Tier A row 14).
+Adding `permissive_pointer_arith` in either order supplies both switches. Every other
+`--switches` value — another switch name, plain `PNVI`/`PNVI_ae`, another mixed list, an override (R-PNVI-11), an unknown name
 (R-PNVI-12) — and `--iso` is refused at the CLI (`Main.lean` `judgeSwitches`/`refuseSwitches`, per element; `refuseFlag`),
 including where the oracle silently ignores the name. Inside the PNVI-ae-udi semantics, the upstream arms that crash,
 print debug output or call themselves wrong are refused (§3, the R-PNVI rows); the default set is unchanged by all of

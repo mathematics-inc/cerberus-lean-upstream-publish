@@ -85,6 +85,21 @@ declare ocaml target_rep function reset_tagDefs = `Tags.reset_tagDefs`
 
 
 
+(* STD §6.2.7#1: two structures or unions declared in separate translation
+   units can be compatible only if both have the same tag, or neither has one.
+   A tag symbol of an anonymous structure has SD_unnamed_tag; the members are
+   compared afterwards in both cases. *)
+val tags_correspond: Symbol.sym -> Symbol.sym -> bool
+let tags_correspond tag1 tag2 =
+  match (tag1, tag2) with
+    | (Symbol.Symbol _ _ (Symbol.SD_Id tag_str1), Symbol.Symbol _ _ (Symbol.SD_Id tag_str2)) ->
+        tag_str1 = tag_str2
+    | (Symbol.Symbol _ _ (Symbol.SD_unnamed_tag _), Symbol.Symbol _ _ (Symbol.SD_unnamed_tag _)) ->
+        true
+    | _ ->
+        false
+  end
+
 val     are_compatible_aux: (map Symbol.sym (Loc.t * tag_definition) * map Symbol.sym (Loc.t * tag_definition) * list (Symbol.sym * Symbol.sym)) -> (qualifiers * ctype) -> (qualifiers * ctype) -> bool
 let rec are_compatible_aux ((tagDefs1, tagDefs2, assumed) as env) (qs1, Ctype _ ty1) (qs2, Ctype _ ty2) =
   let are_compatible_aux assumed qs_ty1 qs_ty2 = are_compatible_aux (tagDefs1, tagDefs2, assumed) qs_ty1 qs_ty2 in
@@ -118,14 +133,7 @@ let rec are_compatible_aux ((tagDefs1, tagDefs2, assumed) as env) (qs1, Ctype _ 
         if Symbol.from_same_translation_unit tag1 tag2 then
           tag1 = tag2
         else
-          let (tag_str1, tag_str2) =
-            match (tag1, tag2) with
-              | (Symbol.Symbol _ _ (Symbol.SD_Id tag_str1), Symbol.Symbol _ _ (Symbol.SD_Id tag_str2)) ->
-                  (tag_str1, tag_str2)
-              | _ ->
-                  error "Ctype_aux.are_compatible_aux: failed to destruct a struct tag"
-            end in
-          if tag_str1 = tag_str2 then
+          if tags_correspond tag1 tag2 then
             if List.elem (tag1, tag2) assumed then true else
             match (Map.lookup tag1 tagDefs1, Map.lookup tag2 tagDefs2) with
               | (Nothing, Nothing) ->
@@ -161,14 +169,7 @@ let rec are_compatible_aux ((tagDefs1, tagDefs2, assumed) as env) (qs1, Ctype _ 
         if Symbol.from_same_translation_unit tag1 tag2 then
           tag1 = tag2
         else
-          let (tag_str1, tag_str2) =
-            match (tag1, tag2) with
-              | (Symbol.Symbol _ _ (Symbol.SD_Id tag_str1), Symbol.Symbol _ _ (Symbol.SD_Id tag_str2)) ->
-                  (tag_str1, tag_str2)
-              | _ ->
-                  error "Ctype_aux.are_compatible_aux: failed to destruct a union tags"
-            end in
-          if tag_str1 = tag_str2 then
+          if tags_correspond tag1 tag2 then
             if List.elem (tag1, tag2) assumed then true else
             match (Map.lookup tag1 tagDefs1, Map.lookup tag2 tagDefs2) with
               | (Nothing, Nothing) ->
@@ -291,7 +292,11 @@ declare {lean} fuel val are_compatible_params = `fuelExhausted false`
    bounds on the block's call depth, computed by the fuel-free wrappers —
    lean_frontend/CerbCtypeMeasure.lean (the qualified-helper seam form; proofs in
    Ctype_aux_lemMeasureProofs.lean). Each member's bound covers the WHOLE mutual
-   block's depth from that entry (one shared counter). *)
-declare {lean} fuel_measure val are_compatible_aux = `CerbCtypeMeasure.auxBound p p0 p1`
-declare {lean} fuel_measure val are_compatible_params_aux = `CerbCtypeMeasure.paramsAuxBound env1 lemTail`
-declare {lean} fuel_measure val are_compatible_params = `CerbCtypeMeasure.paramsBound env1 params1 params2`
+   block's depth from that entry (one shared counter). The wrappers start at the
+   ENTRY FUELS auxFuel/paramsAuxFuel/paramsFuel, which are at or above those
+   bounds but avoid materializing every pair of tag occurrences of the two
+   tables; the proofs show the worker is stable at any fuel at or above the
+   bound, so results are unchanged. *)
+declare {lean} fuel_measure val are_compatible_aux = `CerbCtypeMeasure.auxFuel p p0 p1`
+declare {lean} fuel_measure val are_compatible_params_aux = `CerbCtypeMeasure.paramsAuxFuel env1 lemTail`
+declare {lean} fuel_measure val are_compatible_params = `CerbCtypeMeasure.paramsFuel env1 params1 params2`

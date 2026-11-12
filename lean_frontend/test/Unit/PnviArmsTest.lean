@@ -41,6 +41,7 @@ def testTop : Int := 65536
 def swDefault : CerbGlobal.Switches := ⟨CerbGlobal.defaultSwitches⟩
 def swPlain : CerbGlobal.Switches := ⟨[.PNVI .PLAIN]⟩
 def swAEUDI : CerbGlobal.Switches := ⟨[.PNVI .AE_UDI]⟩
+def swPermissive : CerbGlobal.Switches := ⟨[.PNVI .AE_UDI, .pointer_arith .PERMISSIVE]⟩
 
 def intTy : ctype := Ctype [] (.Basic (.Integer (.Signed .Int_)))
 def ulongTy : ctype := Ctype [] (.Basic (.Integer (.Unsigned .Long)))
@@ -219,6 +220,25 @@ def checks (fuel : Nat) : List (String × Bool) := Id.run do
     ("eff_array_shift AE_UDI: iota Double 0 1 @108 + 1 int → only 1 admits it → collapse to 1",
       match step (eas swAEUDI (sym 0 108) 1) stI with
       | (NDactive pv, s) => provOf pv == Provenance.Prov_symbolic 0 && addrOf pv == some 112 && iotaIs s 0 (.Single 1) | _ => false),
+    ("permissive symbolic shift keeps Double provenance outside both allocations",
+      match step (eas swPermissive (sym 0 108) (-3)) stI with
+      | (NDactive pv, st) => addrOf pv == some 96 && provOf pv == .Prov_symbolic 0
+          && iotaIs st 0 (.Double 0 1)
+      | _ => false),
+    ("permissive shift accepts a concrete address without provenance",
+      match (step (eas swPermissive (.PV .Prov_none (.PVconcrete none 100)) 1) stE).1 with
+      | NDactive pv => addrOf pv == some 104 && provOf pv == .Prov_none
+      | _ => false),
+    ("permissive subtraction gives a scaled value without collapsing the iota",
+      match step (dfp swPermissive (sym 0 112) (some_ 1 108)) stI with
+      | (NDactive iv, st) => ivIs iv .Prov_none 1 && iotaIs st 0 (.Double 0 1)
+      | _ => false),
+    ("permissive subtraction of two symbolic pointers preserves both iotas",
+      match step (dfp swPermissive (sym 0 108) (sym 1 112))
+          (withIota stE [(0, .Double 0 1), (1, .Double 0 1)]) with
+      | (NDactive iv, st) => ivIs iv .Prov_none (-1)
+          && iotaIs st 0 (.Double 0 1) && iotaIs st 1 (.Double 0 1)
+      | _ => false),
     ("eff_array_shift AE_UDI: iota Double 0 1 @108 + 0 → no collapse",
       match step (eas swAEUDI (sym 0 108) 0) stI with
       | (NDactive pv, s) => addrOf pv == some 108 && iotaIs s 0 (.Double 0 1) | _ => false),

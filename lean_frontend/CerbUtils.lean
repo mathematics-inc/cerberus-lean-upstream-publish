@@ -20,6 +20,15 @@ def begin_timing (_ : String) : Unit := ()
 
 def end_timing (_ : Unit) : Unit := ()
 
+/-! ## Driver memory-event trace
+    Corresponds to: driver.lem `record_trace_event` (`ev :: tr` in OCaml).
+    VALUE IDENTITY on the list: the OCaml trace is read only by `--trace`
+    (driver_ocaml.ml:290-301) and the web UI; this port has no `--trace`
+    and nothing reads `driver_state.trace` (CerbMem.prefixOfPointer note).
+    Keeping the events retained every load/store/kill with its values for
+    the whole run. Restore the cons here if a `--trace` printer is ported. -/
+def record_trace_event {α : Type} (_ : α) (tr : List α) : List α := tr
+
 /-! ## Logging
     Corresponds to: Cerb_logging.log_standard in cerb_logging.ml — the OCaml
     side logs the ISO citation and returns the value unchanged. VALUE IDENTITY

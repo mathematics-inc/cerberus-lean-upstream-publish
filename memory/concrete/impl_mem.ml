@@ -170,7 +170,7 @@ and sizeof ?(tagDefs= Tags.tagDefs ()) (Ctype (_, ty) as cty) : Z.t =
         let x = modulus max_offset align in
         if equal x zero then max_offset else Z.add max_offset (Z.sub align x)
     | Union tag_sym ->
-        begin match Pmap.find tag_sym (Tags.tagDefs ()) with
+        begin match Pmap.find tag_sym tagDefs with
           | _, StructDef _ ->
               assert false
           | _, UnionDef membrs ->
@@ -252,7 +252,7 @@ and alignof ?(tagDefs= Tags.tagDefs ()) (Ctype (_, ty) as cty) =
               ) init membrs
         end
     | Union tag_sym ->
-        begin match Pmap.find tag_sym (Tags.tagDefs ()) with
+        begin match Pmap.find tag_sym tagDefs with
           | _, StructDef _ ->
               assert false
           | _, UnionDef membrs ->

@@ -15,6 +15,7 @@
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN="${CERB_LEAN_BIN_OVERRIDE:-$SCRIPT_DIR/../lean_frontend/.lake/build/bin/cerberus-lean}"
+RT="${CERB_RUNTIME_OVERRIDE:-$SCRIPT_DIR/../_build/install/default}"
 [[ -x "$BIN" ]] || { echo "check_cli_refusals: FAIL — driver not built: $BIN"; exit 1; }
 INPUT=/nonexistent/cli-refusal-probe.json   # never read: flags are refused first
 fails=0
@@ -29,14 +30,14 @@ expect_refused() {  # $1=flag $2=feature substring
 expect_refused "--concurrency" "concurrency is not supported"
 expect_refused "--switches=strict_pointer_arith" "semantics switch set is not supported"
 # PNVI arc S1 (2026-10-05; design §D.3, §F.4, §F.13), S4 (2026-10-07): `--switches` is PARSED
-# in both of the oracle's cmdliner forms; exactly ONE value is accepted — `PNVI_ae_udi` alone
-# (the acceptance witnesses below) — and every other value is refused, each element with its
+# in both of the oracle's cmdliner forms; `PNVI_ae_udi` is accepted alone or with permissive_pointer_arith
+# (the acceptance witnesses below); every other value is refused, each element with its
 # own reason. The `=` form, one row per oracle switch name (switches.ml:60-102) with its
 # reason's distinguishing phrase, plus the oracle's two fail-OPEN cases (an unknown name and
 # an override are ignored there, R-PNVI-12 / R-PNVI-11) and mixed sets:
 expect_refused "--switches=PNVI" "\`PNVI\`: the PNVI-plain / PNVI-ae provenance variants"
 expect_refused "--switches=PNVI_ae" "\`PNVI_ae\`: the PNVI-plain / PNVI-ae provenance variants"
-expect_refused "--switches=permissive_pointer_arith" "the pointer-arithmetic mode switch"
+expect_refused "--switches=permissive_pointer_arith" "supported only together with PNVI_ae_udi"
 expect_refused "--switches=strict_reads" "rm_unspecs Core pass"
 expect_refused "--switches=forbid_nullptr_free" "its arm is a loud kill in CerbMem"
 expect_refused "--switches=zap_dead_pointers" "its arm is a loud kill in CerbMem"
@@ -50,7 +51,7 @@ expect_refused "--switches=copy_prop" "no counterpart in this port's lem model"
 expect_refused "--switches=bogus" "unknown switch name"
 expect_refused "--switches=PNVI_ae_udi,PNVI" "would override a previous switch"
 expect_refused "--switches=PNVI_ae_udi,strict_reads" "\`strict_reads\`: strict reads"
-expect_refused "--switches=PNVI_ae_udi,strict_reads" "\`PNVI_ae_udi\`: PNVI-ae-udi (switches.ml:82-83, SW_PNVI \`AE_UDI) is supported only as the WHOLE switch set"
+expect_refused "--switches=PNVI_ae_udi,strict_reads" "\`PNVI_ae_udi\`: PNVI-ae-udi (switches.ml:82-83, SW_PNVI \`AE_UDI) is supported alone or with permissive_pointer_arith"
 expect_refused "--switches=PNVI_ae_udi,PNVI_ae_udi" "R-PNVI-11"
 expect_refused "--switches=PNVI_ae_udi,bogus" "R-PNVI-12"
 expect_refused "--switches=PNVI_ae_udi," "an empty switch name"
@@ -64,9 +65,11 @@ fi
 # ACCEPTANCE (PNVI arc S4): `--switches=PNVI_ae_udi` and `--switches PNVI_ae_udi` are NOT
 # refused — with the runtime given, the driver gets past the CLI and fails at the input read,
 # exactly like the control below
-for form in "--switches=PNVI_ae_udi" "--switches PNVI_ae_udi"; do
+for form in "--switches=PNVI_ae_udi" "--switches PNVI_ae_udi" \
+    "--switches=PNVI_ae_udi,permissive_pointer_arith" \
+    "--switches permissive_pointer_arith,PNVI_ae_udi"; do
     # shellcheck disable=SC2086
-    out=$(env LEAN_ABORT_ON_PANIC=1 "$BIN" --batch --runtime="$SCRIPT_DIR/../_build/install/default" $form "$INPUT" 2>&1); rc=$?
+    out=$(env LEAN_ABORT_ON_PANIC=1 "$BIN" --batch --runtime="$RT" $form "$INPUT" 2>&1); rc=$?
     if [[ "$out" == *"cerberus-lean: refused"* || "$out" != *"cli-refusal-probe.json"* ]]; then
         echo "check_cli_refusals: FAIL — $form must be ACCEPTED (reach the input read); got rc=$rc: ${out:0:200}"
         fails=$((fails + 1))
@@ -96,7 +99,7 @@ expect_switch_verdict "--switches=PNVI_ae_udi before --batch" "canonical positio
 # control: no refused flag → not a refusal. The runtime is given explicitly
 # (the driver refuses without one since bug-hunt BUG-2, 2026-09-29), so the
 # control reaches the input read and fails there, unrefused.
-out=$(env LEAN_ABORT_ON_PANIC=1 "$BIN" --batch --runtime="$SCRIPT_DIR/../_build/install/default" "$INPUT" 2>&1); rc=$?
+out=$(env LEAN_ABORT_ON_PANIC=1 "$BIN" --batch --runtime="$RT" "$INPUT" 2>&1); rc=$?
 if [[ "$out" == *"cerberus-lean: refused"* ]]; then
     echo "check_cli_refusals: FAIL — control refused without a refused flag (rc=$rc): ${out:0:200}"
     fails=$((fails + 1))
@@ -104,7 +107,6 @@ fi
 # repeated single-valued options the oracle's command line rejects (bug-hunt
 # fixes pre-merge audit L3, 2026-09-30): exit 2 with the "cannot be repeated"
 # message, never silently the last value
-RT="$SCRIPT_DIR/../_build/install/default"
 for pair in "--runtime=$RT --runtime=$RT" "--args a --args b" "--switches=PNVI_ae_udi --switches=PNVI_ae_udi" "--switches PNVI_ae_udi --switches=strict_reads"; do
     # shellcheck disable=SC2086
     out=$(env LEAN_ABORT_ON_PANIC=1 CERB_INSTALL_PREFIX="$RT" "$BIN" --batch $pair "$INPUT" 2>&1); rc=$?
@@ -118,8 +120,8 @@ done
 # PNVI-ae-udi finds the exposed allocation) — Lean under --switches=PNVI_ae_udi must equal the
 # oracle under the same switch, and Lean without the switch must equal the oracle without it
 # and DIFFER from the switched answer (so the witness cannot pass with the switch ignored).
-ORACLE="$SCRIPT_DIR/../_build/default/backend/driver/main.exe"
-RT="$SCRIPT_DIR/../_build/install/default"
+# A pinned installed oracle can supply the witness without a local OCaml build.
+ORACLE="${CERB_ORACLE_BIN_OVERRIDE:-$SCRIPT_DIR/../_build/default/backend/driver/main.exe}"
 if [[ ! -x "$ORACLE" ]]; then
     echo "check_cli_refusals: FAIL — oracle not built (agreement witness): $ORACLE"; fails=$((fails + 1))
 else
@@ -149,4 +151,4 @@ CEOF
     fi
 fi
 [[ $fails -eq 0 ]] || exit 1
-echo "check_cli_refusals: OK (24 refusals pinned: --concurrency, --iso, 21 --switches= values (every oracle switch-name class but PNVI_ae_udi alone, an unknown name, overrides, mixed sets, the empty value and a trailing empty element) and the --switches space form; --switches=PNVI_ae_udi ACCEPTED in both forms, and on one program it runs, agrees with the oracle under the same switch and differs from the default; 6 switch-placement verdicts (--parse-core =/space/accepted, before a misplaced --batch refused and accepted, a repeated unknown name not an override); 4 repeated options refused: --runtime, --args, --switches twice (=/= and space/=); control not refused)"
+echo "check_cli_refusals: OK (24 refusals pinned: --concurrency, --iso, 21 --switches= values (every unsupported standalone oracle switch-name class, an unknown name, overrides, mixed sets, the empty value and a trailing empty element) and the --switches space form; PNVI_ae_udi alone and with permissive_pointer_arith ACCEPTED in both CLI forms; on one program PNVI_ae_udi runs, agrees with the oracle under the same switch and differs from the default; 6 switch-placement verdicts (--parse-core =/space/accepted, before a misplaced --batch refused and accepted, a repeated unknown name not an override); 4 repeated options refused: --runtime, --args, --switches twice (=/= and space/=); control not refused)"

@@ -1092,8 +1092,15 @@ KKK:              EU.return (PEval (Vloaded (LVspecified (OVstruct tag_sym xs)))
         self pe2 >>= fun pe2 ->
         match (Caux.valueFromPexpr pe1, Caux.valueFromPexpr pe2) with
           | (Just (Vctype ty1), Just (Vctype ty2)) ->
+              (* STD §6.2.7#1: after linking, a struct or union type from one
+                 translation unit is compatible with the same-tagged type of
+                 another unit when their members correspond. The call check
+                 (§6.5.2.2#9) compares the caller's parameter types with the
+                 callee's, which come from different units when the callee is
+                 reached through a function pointer, so tag symbols alone
+                 cannot decide it. Ctype_aux implements the cross-unit rule. *)
               let are_compatible =
-                AilTypesAux.are_compatible
+                Ctype_aux.are_compatible
                   (Ctype.no_qualifiers, ty1)
                   (Ctype.no_qualifiers, ty2) in
               EU.return $ PEval (if are_compatible then Vtrue else Vfalse)

@@ -205,7 +205,7 @@ roots = [
   "CabsImport",
   "CoreParser",
   "CerbND",
-  "CerbCall",
+  "CerbCall", "CoreLeanSourceBase", "CoreLeanSourceGen", "CoreSymsGen", "CoreLeanSource", "RunLinked",
   # fuel_measure obligation proofs (fuel-parameter arc C1 / D2 enablers): the
   # hand-written <Module>_lemMeasureProofs modules the generated
   # <Module>_auxiliary.lean obligation shells import (build fails without them)

@@ -175,8 +175,43 @@ theorem Acyclic.pair {m : CerbTags.TagDefsMap} (h : Acyclic m) : AcyclicPair m m
     every type it makes the recursion enter. -/
 def defSize (d : tag_definition) : Nat := ((memberTypes d).map ctype.lemSize).sum
 
+/-- Environments `defsWeight` has been computed for, with their weights, most
+    recent first. Each stored map stays alive while it is cached, so its address
+    cannot be reused by a different map. -/
+private initialize defsWeightCache : IO.Ref (List (CerbTags.TagDefsMap × Nat)) ←
+  IO.mkRef []
+
+/-- How many environments `defsWeightImpl` remembers. Execution uses the linked
+    table, and offsetsof also passes a second table, so a few entries cover
+    every alternation without thrashing. -/
+private def defsWeightCacheSize : Nat := 4
+
+/-- Run-time implementation of `defsWeight`: the same sum, computed once per
+    environment object. The layout wrappers pass `envBound` (and friends) as
+    fuel on every load, store, sizeof and alignof, with the same table each
+    time; recomputing the sum walks every member of every tag, so each memory
+    operation cost time linear in the whole tag environment.
+    Hit: the cached map is the same object as `m` (pointer identity), so its
+    stored sum is `defsWeight m`. Miss: the sum is computed exactly as in
+    `defsWeight` and remembered. The result is always `defsWeight m`, so fuel,
+    verdicts and traces cannot change.
+    Trusted assumption (the seam): two `TagDefsMap` values that are the same
+    heap object are equal, as for Lean core's `ptrEq`/`withPtrEq`. -/
+@[never_extract, noinline]
+private unsafe def defsWeightImpl (m : CerbTags.TagDefsMap) : Nat :=
+  unsafeBaseIO do
+    let cached ← defsWeightCache.get
+    match cached.find? (fun (c, _) => ptrAddrUnsafe c == ptrAddrUnsafe m) with
+    | some (_, w) => return w
+    | none =>
+      let w := ((fmapElements m).map (fun p => defSize p.2.2 + 2)).sum
+      defsWeightCache.set ((m, w) :: cached.take (defsWeightCacheSize - 1))
+      return w
+
 /-- The whole environment's weight: every entry's `defSize` plus the two
-    frames a hop into it costs. -/
+    frames a hop into it costs. Executed by `defsWeightImpl`, which caches it
+    per environment object; proofs use this definition. -/
+@[implemented_by defsWeightImpl]
 def defsWeight (m : CerbTags.TagDefsMap) : Nat :=
   ((fmapElements m).map (fun p => defSize p.2.2 + 2)).sum
 

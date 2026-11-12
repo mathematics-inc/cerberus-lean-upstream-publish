@@ -71,3 +71,8 @@ Monadic_parsing_lemMeasureProofs.lean
 CerbFail.lean
 CerbFailProofs.lean
 CerbNDFuelProofs.lean
+CoreLeanSourceBase.lean
+CoreLeanSourceGen.lean
+CoreLeanSource.lean
+RunLinked.lean
+CoreSymsGen.lean

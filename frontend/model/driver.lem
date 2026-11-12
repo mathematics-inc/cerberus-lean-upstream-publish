@@ -80,6 +80,17 @@ type driver_state = <|
   dr_step_counter: nat;
 |>
 
+(* The memory-event trace (trace_event.lem) is read only by the OCaml driver's
+   --trace printer (driver_ocaml.ml:290-301) and the web UI. The Lean port has
+   no --trace, so its target_rep keeps the list unchanged (CerbUtils): the
+   events are never consumed there, and retaining every load/store/kill with
+   its values made memory grow with the number of executed memory actions. *)
+val record_trace_event : trace_event -> list trace_event -> list trace_event
+let record_trace_event ev tr = ev :: tr
+declare lean target_rep function record_trace_event = `CerbUtils.record_trace_event`
+
+
+
 let driver_state_eq dr_st1 dr_st2 =
      dr_st1.core_state = dr_st2.core_state
   && dr_st1.layout_state = dr_st2.layout_state
@@ -533,7 +544,7 @@ let rec drive_core_thread2 tid =
                       ND.return ()
                   | Core_run.TSK_Return sym mval_opt ->
                       ND.update $ fun dr_st ->
-                        <| dr_st with trace= ME_function_return sym mval_opt :: dr_st.trace |>
+                        <| dr_st with trace= record_trace_event (ME_function_return sym mval_opt) dr_st.trace |>
                   | _ ->
                       error "TODO: drive_core_thread2, non TSK_Misc"
                 end >>= fun () ->
@@ -557,7 +568,7 @@ let rec drive_core_thread2 tid =
             | Core_run.TSK_Return sym mval_opt ->
                 ND.update $ fun dr_st ->
                 <| dr_st with
-                  trace= ME_function_return sym mval_opt :: dr_st.trace
+                  trace= record_trace_event (ME_function_return sym mval_opt) dr_st.trace
                 |>
             | _ ->
                 error "TODO: drive_core_thread2, non TSK_Misc"
@@ -673,7 +684,7 @@ let action_request_sequential2 loc tid aid = function
       ND.update (fun dr_st ->
         <| dr_st with
           core_state= Core_run.update_thread_state tid (mk_th_st' aid ptrval) dr_st.core_state;
-          trace= ME_allocate_region tid pref align_ival size_ival ptrval :: dr_st.trace
+          trace= record_trace_event (ME_allocate_region tid pref align_ival size_ival ptrval) dr_st.trace
         |>
       )
   
@@ -683,7 +694,7 @@ let action_request_sequential2 loc tid aid = function
       ND.update (fun dr_st ->
         <| dr_st with
           core_state= Core_run.update_thread_state tid (mk_th_st' aid ptrval) dr_st.core_state;
-          trace= ME_allocate_object tid pref align_ival lvalue_ty init_opt ptrval :: dr_st.trace
+          trace= record_trace_event (ME_allocate_object tid pref align_ival lvalue_ty init_opt ptrval) dr_st.trace
         |>
       )
   
@@ -694,7 +705,7 @@ let action_request_sequential2 loc tid aid = function
       ND.update (fun dr_st ->
         <| dr_st with
           core_state= Core_run.update_thread_state tid (mk_th_st' aid fp mval) dr_st.core_state;
-          trace= ME_load loc pref lvalue_ty ptr_val mval :: dr_st.trace
+          trace= record_trace_event (ME_load loc pref lvalue_ty ptr_val mval) dr_st.trace
         |>
       )
   
@@ -707,7 +718,7 @@ let action_request_sequential2 loc tid aid = function
       ND.update (fun dr_st ->
         <| dr_st with
           core_state= Core_run.update_thread_state tid (mk_th_st' aid fp) dr_st.core_state;
-          trace= ME_store loc pref lvalue_ty is_locking ptr_val mem_val :: dr_st.trace
+          trace= record_trace_event (ME_store loc pref lvalue_ty is_locking ptr_val mem_val) dr_st.trace
         |>
       )
   
@@ -719,7 +730,7 @@ let action_request_sequential2 loc tid aid = function
       ND.update (fun dr_st ->
         <| dr_st with
           core_state= Core_run.update_thread_state tid (mk_th_st' aid fp mval mval') dr_st.core_state;
-          trace= ME_seq_rmw loc pref lvalue_ty ptr_val mval mval' :: dr_st.trace
+          trace= record_trace_event (ME_seq_rmw loc pref lvalue_ty ptr_val mval mval') dr_st.trace
         |>
       )
   
@@ -740,7 +751,7 @@ let action_request_sequential2 loc tid aid = function
       ND.update (fun dr_st ->
         <| dr_st with
           core_state= Core_run.update_thread_state tid (mk_th_st' aid) dr_st.core_state;
-          trace= ME_kill loc is_dynamic ptr_val :: dr_st.trace
+          trace= record_trace_event (ME_kill loc is_dynamic ptr_val) dr_st.trace
         |>
       )
 end
@@ -762,8 +773,34 @@ let perform_action_request2 with_concurrency loc tid request =
       action_request_sequential2 loc tid aid request
   end
 
+(* A function designator elaborates, in each translation unit, to a pointer
+   to that unit's own symbol for the function (Translation.
+   translate_function_designator). Linking records which symbol defines each
+   external function (core_extern, declarations -> definitions), and calls
+   through a pointer already resolve the declaration through it
+   (Core_run.call_proc). Pointers to one external function must also compare
+   equal and convert to the same integer whichever unit designated it (C11
+   6.5.9p6), so comparisons and integer conversions use the linked definition
+   too. Functions with internal linkage are not in core_extern and keep their
+   own unit's identity (C11 6.2.2). *)
+val linked_funptr: map Symbol.sym Symbol.sym -> Mem.pointer_value -> Mem.pointer_value
+let linked_funptr core_extern ptr_val =
+  Mem.case_ptrval ptr_val
+    (fun _ -> ptr_val)
+    (fun sym_opt ->
+      match sym_opt with
+        | Just sym ->
+            match Map.lookup sym core_extern with
+              | Just def_sym -> Mem.fun_ptrval def_sym
+              | Nothing -> ptr_val
+            end
+        | Nothing -> ptr_val
+      end)
+    (fun _ _ -> ptr_val)
+
 val perform_memop_request2: Loc.t -> Mem_common.memop -> list Core.value -> Mem.thread_id -> (Core.value -> Core_run.thread_state) -> driverM unit
 let perform_memop_request2 loc memop cvals tid mk_th_st =
+  ND.read (fun dr_st -> dr_st.core_extern) >>= fun core_extern ->
   match (memop, cvals) with
     | (Mem_common.Ptrdiff, [Core.Vctype ty; Core.Vobject (Core.OVpointer ptr_val1); Core.Vobject (Core.OVpointer ptr_val2)]) ->
         liftMem (Mem.diff_ptrval loc ty ptr_val1 ptr_val2) >>= fun ival ->
@@ -775,7 +812,7 @@ let perform_memop_request2 loc memop cvals tid mk_th_st =
         else
           ND.return ()
         end >>= fun () -> (* DEBUG *)
-        liftMem (Mem.intfromptr loc ref_ty ity ptr_val) >>= fun ival ->
+        liftMem (Mem.intfromptr loc ref_ty ity (linked_funptr core_extern ptr_val)) >>= fun ival ->
         ND.return (mk_th_st (Core.Vobject (Core.OVinteger ival)))
     
     | (Mem_common.PtrFromInt, [Core.Vctype (Ctype.Ctype _ (Ctype.Basic (Ctype.Integer ity))); Core.Vctype ref_ty; Core.Vobject (Core.OVinteger ival)]) ->
@@ -788,11 +825,11 @@ let perform_memop_request2 loc memop cvals tid mk_th_st =
     
     | (Mem_common.PtrEq, [Core.Vobject (Core.OVpointer ptr_val1); Core.Vobject (Core.OVpointer ptr_val2)]) ->
         ND.print_debug 2 [Debug.DB_driver] (fun () -> "PtrEq") >> (* DEBUG *)
-        liftMem (Mem.eq_ptrval loc ptr_val1 ptr_val2) >>= fun is_eq ->
+        liftMem (Mem.eq_ptrval loc (linked_funptr core_extern ptr_val1) (linked_funptr core_extern ptr_val2)) >>= fun is_eq ->
         ND.return (mk_th_st (if is_eq then Core.Vtrue else Core.Vfalse))
     
     | (Mem_common.PtrNe, [Core.Vobject (Core.OVpointer ptr_val1); Core.Vobject (Core.OVpointer ptr_val2)]) ->
-        liftMem (Mem.ne_ptrval loc ptr_val1 ptr_val2) >>= fun is_ne ->
+        liftMem (Mem.ne_ptrval loc (linked_funptr core_extern ptr_val1) (linked_funptr core_extern ptr_val2)) >>= fun is_ne ->
         ND.return (mk_th_st (if is_ne then Core.Vtrue else Core.Vfalse))
     
     | (Mem_common.PtrLt, [Core.Vobject (Core.OVpointer ptr_val1); Core.Vobject (Core.OVpointer ptr_val2)]) ->
@@ -834,7 +871,7 @@ let perform_memop_request2 loc memop cvals tid mk_th_st =
         liftMem (Mem.eff_array_shift_ptrval loc ptrval ty n_ival) >>= fun res ->
         ND.update (fun dr_st ->
           <| dr_st with
-            trace= ME_eff_array_shift_ptrval ptrval ty n_ival res :: dr_st.trace
+            trace= record_trace_event (ME_eff_array_shift_ptrval ptrval ty n_ival res) dr_st.trace
           |>
         ) >>
         ND.return (mk_th_st (Core.Vobject (Core.OVpointer res)))
@@ -843,7 +880,7 @@ let perform_memop_request2 loc memop cvals tid mk_th_st =
         liftMem (Mem.eff_member_shift_ptrval loc ptrval tag_sym membr_ident) >>= fun res ->
         ND.update (fun dr_st ->
           <| dr_st with
-            trace= ME_eff_member_shift_ptrval tag_sym membr_ident ptrval res :: dr_st.trace
+            trace= record_trace_event (ME_eff_member_shift_ptrval tag_sym membr_ident ptrval res) dr_st.trace
           |>
         ) >>
         ND.return (mk_th_st (Core.Vobject (Core.OVpointer res)))
@@ -949,7 +986,7 @@ let advance_step tid step =
         match rsk with
           | Core_reduction.RSK_tau _ (Core_run.TSK_Return sym mval_opt) ->
               ND.update (fun dr_st ->
-                <| dr_st with trace= ME_function_return sym mval_opt :: dr_st.trace |>
+                <| dr_st with trace= record_trace_event (ME_function_return sym mval_opt) dr_st.trace |>
               )
           | _ ->
               ND.return ()
@@ -965,7 +1002,7 @@ let advance_step tid step =
         match tsk with
           | Core_run.TSK_Return sym mval_opt ->
               ND.update (fun dr_st ->
-                <| dr_st with trace= ME_function_return sym mval_opt :: dr_st.trace |>
+                <| dr_st with trace= record_trace_event (ME_function_return sym mval_opt) dr_st.trace |>
               )
           | _ ->
               ND.return ()
@@ -1147,7 +1184,7 @@ let rec drive_nonmemory_steps_aux (acc: map Mem.thread_id (list Core_reduction.c
                   match rsk with
                     | Core_reduction.RSK_tau _ (Core_run.TSK_Return sym mval_opt) ->
                         ND.update (fun dr_st ->
-                          <| dr_st with trace= ME_function_return sym mval_opt :: dr_st.trace |>
+                          <| dr_st with trace= record_trace_event (ME_function_return sym mval_opt) dr_st.trace |>
                         )
                     | _ ->
                         ND.return ()
@@ -1163,7 +1200,7 @@ let rec drive_nonmemory_steps_aux (acc: map Mem.thread_id (list Core_reduction.c
                   match tsk with
                     | Core_run.TSK_Return sym mval_opt ->
                         ND.update (fun dr_st ->
-                          <| dr_st with trace= ME_function_return sym mval_opt :: dr_st.trace |>
+                          <| dr_st with trace= record_trace_event (ME_function_return sym mval_opt) dr_st.trace |>
                         )
                     | _ ->
                         ND.return ()

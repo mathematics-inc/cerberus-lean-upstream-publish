@@ -8,6 +8,10 @@
   and work with the Lem-generated types from IntegerType.lean and Ctype.lean.
 
   ABI: LP64 (x86_64-apple-darwin), matching Cerberus DefaultImpl.
+
+  LOCAL FIXED PROFILE: the three marked Char0/Wchar_t choices below match
+  the kernel flags -funsigned-char -fshort-wchar. Other historical comments
+  describe upstream DefaultImpl. This override adds no runtime configuration.
 -/
 
 import IntegerType
@@ -109,13 +113,13 @@ def register_enum (_ : sym) (_ : List Int) : Bool := true
     leaf. -/
 def is_signed_ity (ity : integerType) : Bool :=
   match ity with
-  | .Char0 => true      -- char_is_signed = true for DefaultImpl
+  | .Char0 => false     -- local kernel profile: -funsigned-char; keep Char0 distinct
   | .Bool0 => false
   | .Signed _ => true
   | .Unsigned _ => false
   | .Enum0 _ => failwithI "assert false: Common.is_signed_ity reached an un-normalised Enum (ocaml_implementation.ml:95-96; the callers resolve it first)"
   | .Size_t => false    -- STD §7.19#2
-  | .Wchar_t => true
+  | .Wchar_t => false   -- local kernel profile: -fshort-wchar
   | .Wint_t => true
   | .Ptrdiff_t => true  -- STD §7.19#2
   | .Ptraddr_t => false
@@ -178,7 +182,7 @@ def normalise_aliases : integerType → integerType
   | .Signed ibty => .Signed (aux_ibty ibty)      -- :52-53
   | .Unsigned ibty => .Unsigned (aux_ibty ibty)  -- :54-55
   | .Enum0 _ => failwithI "CerberusImpl.normalise_aliases: an un-normalised Enum reached a type-only layout rep (Implementation.normalise_integerType / CerbMem resolveEnum normalise first — unreachable by construction)"
-  | .Wchar_t => .Signed .Int_                    -- :58-59, :164 (TODO: check — upstream's own note)
+  | .Wchar_t => .Unsigned .Short                -- local kernel profile: unsigned 16-bit wchar_t
   | .Wint_t => .Signed .Int_                     -- :60-61, :165
   | .Size_t => .Unsigned .Long                   -- :62-63, :166
   | .Ptrdiff_t => .Signed .Long                  -- :64-65, :167

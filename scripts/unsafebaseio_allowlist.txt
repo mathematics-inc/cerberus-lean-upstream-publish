@@ -36,6 +36,21 @@ lem-lean/lean-lib/LemLib.lean	lemSeqImpl	temporal(lem-lean TODO 24: failure-mona
 #   failure-monad translation (queued; design pass with the operator first), which deletes lemSeqImpl.
 #   Pinned below as IMPLBY + UNSAFEDECL + UNSAFEBASEIO rows (COUNT 1, the consumed LemLib copy).
 #   D1(b) [same ruling] REMOVED LemLib's @[extern] lemSetExitOnPanic seam at 77ad4fa: no row exists for it.
+lean_frontend/CerbTagsWf.lean	defsWeightImpl	temporal(mover: carry the weight with the tag table)	KEEP until defsWeight is threaded with the table it measures
+# defsWeightImpl (added 2026-11-09, evaluator cost): the implemented_by body of the TRANSPARENT
+#   `def defsWeight m := ((fmapElements m).map (defSize · + 2)).sum`. The kernel and every proof see
+#   that sum. envBound/memberBound/offsetsofBound pass it as fuel to the layout oracle and
+#   reconstructValue on EVERY load, store, sizeof and alignof, so each memory operation walked every
+#   member of every tag (per-step cost linear in the whole tag environment; a 2000-tag program ran
+#   int-only steps about 10x slower). At run time defsWeightImpl returns the sum stored for the same
+#   map object (ptrAddrUnsafe; a 4-entry IO.Ref cache under unsafeBaseIO that keeps each stored map
+#   alive, so an address cannot be reused) and otherwise computes and stores it.
+#   Trusted assumption: the same heap object denotes the same TagDefsMap value (as Lean core's
+#   ptrEq/withPtrEq). The result is always `defsWeight m`, so fuel, verdicts and traces are unchanged.
+#   Mover: thread a precomputed weight with the table (the reader `_lemReader_tagDefs`, ~1200
+#   generated sites, plus mem.lem's reader_consumer), or a cheaper bound proved sufficient by the
+#   *_measure_sufficient lemmas; either deletes this row.
+#   Pinned below as IMPLBY + UNSAFEDECL + UNSAFEBASEIO rows (COUNT 2: the source and its generated/ copy).
 # --- retired 2026-09-19 (seam-hygiene H3, docs/2026-09-18_seam-hygiene-record.md §5) ---
 # lean_frontend/CerbUtils.lean timingStackRef / logRef / STD_impl (+ begin_timing_impl,
 # end_timing_impl) — DELETED: `begin_timing`/`end_timing`/`STD_` are plain value
@@ -160,3 +175,6 @@ PIN UNSAFEDECL lean_frontend/CerberusFresh.lean digest_impl 2
 PIN UNSAFEDECL lean_frontend/CerberusFresh.lean digestPure 2
 PIN UNSAFEDECL lean_frontend/CerberusFresh.lean forceIO_impl 2
 PIN UNSAFEDECL lean_frontend/CerberusFresh.lean forceThunkIO 2
+PIN IMPLBY lean_frontend/CerbTagsWf.lean defsWeightImpl 2
+PIN UNSAFEBASEIO lean_frontend/CerbTagsWf.lean defsWeightImpl 2
+PIN UNSAFEDECL lean_frontend/CerbTagsWf.lean defsWeightImpl 2
